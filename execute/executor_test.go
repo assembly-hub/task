@@ -24,9 +24,9 @@ func hello2(i ...interface{}) (interface{}, error) {
 func TestTaskExecuteSimple(t *testing.T) {
 	taskObj := NewExecutor("test111")
 	taskObj.AddTask(hello1, 0)
-	taskObj.AddSimpleTask(func(i int) (interface{}, error) {
+	taskObj.AddSimpleTask(func(i int) (int64, error) {
 		fmt.Println("test: ", i)
-		return nil, nil
+		return 1, nil
 	}, 1)
 	r, taskErr, err := taskObj.ExecuteTaskWithErr()
 	if err != nil {
@@ -39,7 +39,7 @@ func TestTaskExecuteSimple(t *testing.T) {
 		if v == nil {
 			fmt.Println(strconv.Itoa(i) + ": nil")
 		} else {
-			fmt.Println(strconv.Itoa(i) + ": " + strconv.Itoa(v.(int)))
+			fmt.Printf("%d: %v\n", i, v)
 		}
 	}
 }

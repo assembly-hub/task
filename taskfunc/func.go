@@ -20,11 +20,11 @@ func NewConcurrencyFuncType(f interface{}) *ConcurrencyFuncType {
 	tf := new(ConcurrencyFuncType)
 	tf.funcType = reflect.TypeOf(f)
 	if tf.funcType.Kind() != reflect.Func {
-		panic("NewConcurrencyFuncType param must be taskfunc(param ...interface{}) (interface{}, error) or " +
-			"taskfunc(i int, s string, ...) (interface{}, error)")
+		panic("NewConcurrencyFuncType param must be taskfunc(param ...interface{}) (any, error) or " +
+			"taskfunc(i int, s string, ...) (any, error)")
 	}
-	if tf.funcType.NumOut() != 2 || tf.funcType.Out(0).Kind() != reflect.Interface || tf.funcType.Out(1).String() != "error" {
-		panic("task taskfunc return type must be (interface{}, error)")
+	if tf.funcType.NumOut() != 2 || tf.funcType.Out(1).String() != "error" {
+		panic("task taskfunc return type must be (any, error)")
 	}
 
 	tf.funcValType = reflect.ValueOf(f)
