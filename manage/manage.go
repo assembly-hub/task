@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"math"
 	"runtime/debug"
 	"sort"
@@ -16,15 +15,12 @@ import (
 	"github.com/assembly-hub/basics/util"
 	"github.com/assembly-hub/basics/uuid"
 	"github.com/assembly-hub/basics/workpool"
+	"github.com/assembly-hub/log"
+	"github.com/assembly-hub/log/empty"
 	redis8 "github.com/go-redis/redis/v8"
 
 	"github.com/assembly-hub/task/taskfunc"
 )
-
-// 异步任务管理器，要点：
-// 1、所有任务必须注册才可调用
-// 2、任务参数必须可序列化、反序列化
-// 3、任务管理器只保证任务执行，业务逻辑报错需要业务处理
 
 const msgMaxIdleTime = time.Hour * 10
 
@@ -42,29 +38,37 @@ var (
 )
 
 // Manager 所有task管理器方法
+// 1、所有任务必须注册才可调用
+// 2、任务参数必须可序列化、反序列化
+// 3、任务管理器只保证任务执行，业务逻辑报错需要业务处理
 type Manager interface {
-	// AddTimerTask 添加定时任务
-	AddTimerTask(taskName string, args []interface{}, timer Timer)
-	// AddIntervalTask 添加间隔任务
-	AddIntervalTask(taskName string, args []interface{}, interval int)
-	// AddDelayTask 添加延迟任务
-	AddDelayTask(taskName string, args []interface{}, delayTime uint)
-	// AddSimpleTask 添加即时任务
-	AddSimpleTask(taskName string, args []interface{})
-	// RegisterTask 注册任务，包括：任务名称以及执行函数，函数类型必须是 funcType
-	RegisterTask(taskName string, fun funcType)
-	// RegisterHighLevelTask 推荐此方式
+	// Logger 设置logger
+	Logger(logger log.Log)
+	// AddTimer 添加定时任务
+	AddTimer(taskName string, args []interface{}, timer Timer)
+	// AddInterval 添加间隔任务
+	AddInterval(taskName string, args []interface{}, interval int)
+	// AddDelay 添加延迟任务
+	AddDelay(taskName string, args []interface{}, delayTime uint)
+	// AddSimple 添加即时任务
+	AddSimple(taskName string, args []interface{})
+	// RegisterFixed 注册任务，包括：任务名称以及执行函数，函数类型必须是 funcType
+	RegisterFixed(taskName string, fun funcType)
+	// RegisterFlexible 推荐此方式
 	// 注册任务，包括：任务名称以及执行函数，函数类型必须是 taskfunc(param ...interface{}) 或 自定义参数 taskfunc(i int, s string, arr []int)
-	RegisterHighLevelTask(taskName string, fun interface{})
-	// UnRegisterTask 反注册，删除执行器
-	UnRegisterTask(taskName string)
-	// RunTaskManager 启动任务管理器
-	RunTaskManager()
-	// SetNoTaskEffectiveTime 设置任务的有效期（当任务节点任务出现偏差时，检查失败的任务会再次放入执行队列，直到任务时间超过此参数），单位：秒 默认：60
-	SetNoTaskEffectiveTime(second int64)
+	RegisterFlexible(taskName string, fun interface{})
+	// UnRegister 反注册，删除执行器
+	UnRegister(taskName string)
+	// Run 启动任务管理器
+	Run()
+	// SetTaskEffectiveTime 设置任务的有效期，单位：秒 默认：60
+	// 任务管理器启动有先后，在服务变更时，某个task可能在旧的的node不存在，因此执行不了，
+	// 所以需要将任务重新添加到队列，但是需要兼容这个任务已下线，永远不能可能执行的情况
+	// 因此需要指定此类任务有效时间，单位：秒 默认：60
+	SetTaskEffectiveTime(second int64)
 }
 
-type taskMQ struct {
+type taskInfo struct {
 	TaskName   string        `json:"task_name"`
 	SubmitTime string        `json:"submit_time"`
 	RunTime    string        `json:"run_time"`
@@ -72,6 +76,7 @@ type taskMQ struct {
 }
 
 type manager struct {
+	ctx context.Context
 	// 主服务key
 	taskMainKey string
 	// 主服务标识
@@ -84,8 +89,11 @@ type manager struct {
 	// 任务标识
 	taskLabel string
 
+	// 正在执行的任务锁
+	runningTaskLock string
+
 	// 任务管理器启动有先后，在服务变更时，某个task可能在旧的的node不存在，因此执行不了，
-	// 所有需要将任务重新添加到队列，但是需要兼容这个任务可能就是异常的或者是旧的（已下线的任务），永远不能可能执行的情况
+	// 所以需要将任务重新添加到队列，但是需要兼容这个任务已下线，永远不能可能执行的情况
 	// 因此需要指定此类任务有效时间，单位：秒 默认：60
 	taskEffectiveTime int64
 
@@ -108,13 +116,20 @@ type manager struct {
 
 	// redis ZSet
 	delayZSetKey string
+	logger       log.Log
 }
 
-func (t *manager) UnRegisterTask(taskName string) {
+func (t *manager) Logger(logger log.Log) {
+	if logger != nil {
+		t.logger = logger
+	}
+}
+
+func (t *manager) UnRegister(taskName string) {
 	delete(t.taskFuncMap, taskName)
 }
 
-func (t *manager) SetNoTaskEffectiveTime(second int64) {
+func (t *manager) SetTaskEffectiveTime(second int64) {
 	t.taskEffectiveTime = second
 }
 
@@ -123,7 +138,7 @@ func (t *manager) computeDelayTask() {
 		innerFun := func() {
 			defer func() {
 				if p := recover(); p != nil {
-					log.Println(p, "\n", string(debug.Stack()))
+					t.logger.Error(t.ctx, fmt.Sprint(p, "\n", string(debug.Stack())))
 				}
 			}()
 
@@ -133,7 +148,7 @@ func (t *manager) computeDelayTask() {
 			cancel()
 
 			if err != nil {
-				log.Println(err)
+				t.logger.Error(t.ctx, err.Error())
 				return
 			}
 
@@ -142,11 +157,11 @@ func (t *manager) computeDelayTask() {
 				var mp map[string]interface{}
 				err = json.Unmarshal([]byte(val), &mp)
 				if err != nil {
-					log.Println(err)
+					t.logger.Error(t.ctx, err.Error())
 					continue
 				}
 
-				t.addTaskStruct(&taskMQ{
+				t.addTaskStruct(&taskInfo{
 					TaskName:   mp["task_name"].(string),
 					SubmitTime: mp["submit_time"].(string),
 					RunTime:    mp["run_time"].(string),
@@ -160,7 +175,7 @@ func (t *manager) computeDelayTask() {
 				_, err = t.redis.ZRem(ctx, t.delayZSetKey, mem...)
 				cancel()
 				if err != nil {
-					log.Println(err)
+					t.logger.Error(t.ctx, err.Error())
 				}
 			}
 		}
@@ -177,14 +192,14 @@ func (t *manager) computeDelayTask() {
 func (t *manager) addTaskMap(member map[string]interface{}, score float64) {
 	val, err := util.Map2JSON(member)
 	if err != nil {
-		log.Println("addTaskMap, err: ", err)
+		t.logger.Error(t.ctx, fmt.Sprint("addTaskMap, err: ", err))
 		panic(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(3)*time.Second)
 	_, err = t.redis.ZAdd(ctx, t.delayZSetKey, val, score)
 	cancel()
 	if err != nil {
-		log.Println("addTaskMap, err: ", err)
+		t.logger.Error(t.ctx, fmt.Sprint("addTaskMap, err: ", err))
 		panic(err)
 	}
 }
@@ -194,7 +209,7 @@ func (t *manager) computeTask() {
 		innerTask := func(task *manager) {
 			defer func() {
 				if p := recover(); p != nil {
-					log.Println(p, "\n", string(debug.Stack()))
+					t.logger.Error(t.ctx, fmt.Sprint(p, "\n", string(debug.Stack())))
 				}
 			}()
 
@@ -218,7 +233,7 @@ func (t *manager) computeTask() {
 			for i, tk := range task.taskQueue {
 				if tk.runTime <= now.Unix() {
 					if t.isTimerServer {
-						t.addTaskStruct(&taskMQ{
+						t.addTaskStruct(&taskInfo{
 							TaskName:   tk.taskName,
 							SubmitTime: util.IntToStr(now.Unix()),
 							RunTime:    util.IntToStr(tk.runTime),
@@ -255,21 +270,44 @@ func (t *manager) innerTaskFuncBag(params ...interface{}) {
 	p := params[3].([]interface{})
 	taskName := params[4].(string)
 
+	lockKey := fmt.Sprintf(t.runningTaskLock, msgID)
+	b := t.redis.Register(lockKey, t.serverUUID, 2)
+	if !b {
+		return
+	}
+
+	done := make(chan struct{})
+
+	util.SafeGo(func() {
+		for {
+			select {
+			case <-time.After(time.Millisecond * 1000):
+				t.redis.Register(lockKey, t.serverUUID, 2)
+			case <-done:
+				_, _ = t.redis.Del(t.ctx, lockKey)
+				return
+			}
+		}
+	})
+
 	defer func() {
+		done <- struct{}{}
+		close(done)
+
 		cli, ctx := t.redis.Raw()
 		_, err := cli.XAck(ctx, streamKey, t.groupName, msgID).Result()
 		if err != nil {
-			log.Printf("task name: %s, msg id is %s, ack err: %s", taskName, msgID, err.Error())
+			t.logger.Error(t.ctx, fmt.Sprintf("task name: %s, msg id is %s, ack err: %s", taskName, msgID, err.Error()))
 		}
 		_, err = cli.XDel(ctx, streamKey, msgID).Result()
 		if err != nil {
-			log.Printf("task name: %s, msg id is %s, del err: %s", taskName, msgID, err.Error())
+			t.logger.Error(t.ctx, fmt.Sprintf("task name: %s, msg id is %s, del err: %s", taskName, msgID, err.Error()))
 		} else {
-			log.Printf("task name: %s, delete msg id is %s", taskName, msgID)
+			t.logger.Notice(t.ctx, fmt.Sprintf("task name: %s, delete msg id is %s", taskName, msgID))
 		}
 	}()
 
-	log.Printf("task name: %s, msg id is %s", taskName, msgID)
+	t.logger.Notice(t.ctx, fmt.Sprintf("task name: %s, msg id is %s", taskName, msgID))
 	if fun, ok := params[2].(funcType); ok {
 		fun(p...)
 	} else if m, ok := params[2].(*taskfunc.AsyncFuncType); ok {
@@ -277,9 +315,9 @@ func (t *manager) innerTaskFuncBag(params ...interface{}) {
 	}
 }
 
-func (t *manager) addTaskStruct(taskMq *taskMQ) {
+func (t *manager) addTaskStruct(taskMq *taskInfo) {
 	cli, ctx := t.redis.Raw()
-	params, err := util.Interface2JSON(taskMq.Params)
+	params, err := util.Any2JSON(taskMq.Params)
 	if err != nil {
 		panic("params not to json")
 	}
@@ -299,17 +337,17 @@ func (t *manager) addTaskStruct(taskMq *taskMQ) {
 	if err != nil {
 		panic(err)
 	}
-	log.Println("add msg id: ", msgID)
+	t.logger.Notice(t.ctx, fmt.Sprint("add msg id: ", msgID))
 }
 
 func (t *manager) initDemo() {
 	t.taskFuncMap["demo_func"] = func(param ...interface{}) {
-		log.Println(param)
+		t.logger.Debug(t.ctx, fmt.Sprint(param))
 	}
 }
 
 func (t *manager) initRedisData() {
-	t.addTaskStruct(&taskMQ{
+	t.addTaskStruct(&taskInfo{
 		TaskName:   "demo_func",
 		SubmitTime: util.IntToStr(time.Now().Unix()),
 		Params: []interface{}{
@@ -321,7 +359,7 @@ func (t *manager) initRedisData() {
 	_, err := cli.XGroupCreate(ctx, t.streamKey, t.groupName, "0").Result()
 	if err != nil {
 		if !util.EndWith(err.Error(), "Group name already exists", true) {
-			log.Println(err)
+			t.logger.Error(t.ctx, err.Error())
 			panic(err)
 		}
 	}
@@ -329,7 +367,7 @@ func (t *manager) initRedisData() {
 	// 设置消费组的起始id
 	_, err = cli.XGroupSetID(ctx, t.streamKey, t.groupName, "0").Result()
 	if err != nil {
-		log.Println(err)
+		t.logger.Error(t.ctx, err.Error())
 		panic(err)
 	}
 }
@@ -339,7 +377,7 @@ func (t *manager) taskWatch() {
 		innerTask := func() {
 			defer func() {
 				if p := recover(); p != nil {
-					log.Println(p, "\n", string(debug.Stack()))
+					t.logger.Error(t.ctx, fmt.Sprint(p, "\n", string(debug.Stack())))
 				}
 			}()
 
@@ -354,7 +392,7 @@ func (t *manager) taskWatch() {
 			for _, val := range result {
 				msgList := val.Messages
 				for _, msg := range msgList {
-					log.Println("msg: ", msg)
+					t.logger.Notice(t.ctx, fmt.Sprint("msg: ", msg))
 
 					var arr []interface{}
 					err = json.Unmarshal([]byte(msg.Values["params"].(string)), &arr)
@@ -366,7 +404,7 @@ func (t *manager) taskWatch() {
 						}
 					}
 
-					var taskMq = taskMQ{
+					var taskMq = taskInfo{
 						TaskName:   msg.Values["task_name"].(string),
 						SubmitTime: msg.Values["submit_time"].(string),
 						RunTime:    msg.Values["run_time"].(string),
@@ -384,19 +422,19 @@ func (t *manager) taskWatch() {
 								"run_time":    util.IntToStr(execTime),
 								"params":      taskMq.Params,
 							}, float64(execTime))
-							log.Printf("task name[%s] taskfunc is not exists, but submit_time "+
-								"fulfill a request so readd", taskMq.TaskName)
+							t.logger.Warning(t.ctx, fmt.Sprintf("task name[%s] taskfunc is not exists, but submit_time "+
+								"fulfill a request so readd", taskMq.TaskName))
 						}
 
 						_, err = cli.XAck(ctx, val.Stream, task.groupName, msg.ID).Result()
 						if err != nil {
-							log.Println("ack ", msg.ID, ", err ", err)
+							t.logger.Error(t.ctx, fmt.Sprint("ack ", msg.ID, ", err ", err))
 						}
 						_, err = cli.XDel(ctx, val.Stream, msg.ID).Result()
 						if err != nil {
-							log.Println("del ", msg.ID, ", err ", err)
+							t.logger.Error(t.ctx, fmt.Sprint("del ", msg.ID, ", err ", err))
 						}
-						log.Printf("msg id [%s] task name taskfunc is not exists", msg.ID)
+						t.logger.Notice(t.ctx, fmt.Sprintf("msg id [%s] task name taskfunc is not exists", msg.ID))
 						continue
 					}
 
@@ -425,7 +463,7 @@ func (t *manager) taskWatch() {
 		Group:    t.groupName,
 		Count:    1,
 		// Block: 1 * time.Second,
-		// NoAck: true,
+		// NoAck: false,
 	})
 }
 
@@ -457,7 +495,7 @@ func (t *manager) registerScheduledTaskActive() {
 	innerFunc := func(t *manager) {
 		defer func() {
 			if p := recover(); p != nil {
-				log.Println("registerScheduledTaskActive error")
+				t.logger.Error(t.ctx, fmt.Sprintf("registerScheduledTaskActive error: %v", p))
 				t.isTimerServer = false
 			}
 		}()
@@ -477,36 +515,36 @@ func (t *manager) registerScheduledTaskActive() {
 	}()
 }
 
-func (t *manager) RegisterTask(taskName string, fun funcType) {
+func (t *manager) RegisterFixed(taskName string, fun funcType) {
 	if taskName == "" {
-		log.Fatalf("task name not be blank")
+		t.logger.Error(t.ctx, "task name not be blank")
 		return
 	}
 
 	if _, ok := t.taskFuncMap[taskName]; ok {
-		log.Fatalf("task: [%s] is already exists", taskName)
+		t.logger.Error(t.ctx, fmt.Sprintf("task: [%s] is already exists", taskName))
 		return
 	}
 
 	t.taskFuncMap[taskName] = fun
 }
 
-func (t *manager) RegisterHighLevelTask(taskName string, fun interface{}) {
+func (t *manager) RegisterFlexible(taskName string, fun interface{}) {
 	if taskName == "" {
-		log.Fatalf("task name not be blank")
+		t.logger.Error(t.ctx, "task name not be blank")
 		return
 	}
 
 	if _, ok := t.taskFuncMap[taskName]; ok {
-		log.Fatalf("task: [%s] is already exists", taskName)
+		t.logger.Error(t.ctx, fmt.Sprintf("task: [%s] is already exists", taskName))
 		return
 	}
 
-	m := taskfunc.NewAsyncFuncType(fun)
+	m := taskfunc.NewAsyncFuncType(t.ctx, fun, t.logger)
 	t.taskFuncMap[taskName] = m
 }
 
-func (t *manager) AddSimpleTask(taskName string, args []interface{}) {
+func (t *manager) AddSimple(taskName string, args []interface{}) {
 	t.addSimpleTask(taskName, args)
 }
 
@@ -521,12 +559,12 @@ func (t *manager) addSimpleTask(taskName string, args []interface{}) {
 	})
 }
 
-// AddDelayTask
+// AddDelay
 // 异步任务管理器，要点：
 // 1、所有任务必须注册才可调用
 // 2、任务参数必须可序列化、反序列化
 // 3、任务管理器只保证任务执行，业务逻辑报错需要业务处理
-func (t *manager) AddDelayTask(taskName string, args []interface{}, delayTime uint) {
+func (t *manager) AddDelay(taskName string, args []interface{}, delayTime uint) {
 	t.addDelayTask(taskName, args, delayTime)
 }
 
@@ -541,12 +579,12 @@ func (t *manager) addDelayTask(taskName string, args []interface{}, delayTime ui
 	})
 }
 
-// AddIntervalTask
+// AddInterval
 // 异步任务管理器，要点：
 // 1、所有任务必须注册才可调用
 // 2、任务参数必须可序列化、反序列化
 // 3、任务管理器只保证任务执行，业务逻辑报错需要业务处理
-func (t *manager) AddIntervalTask(taskName string, args []interface{}, interval int) {
+func (t *manager) AddInterval(taskName string, args []interface{}, interval int) {
 	t.addIntervalTask(taskName, args, interval)
 }
 
@@ -575,7 +613,7 @@ func (t *manager) addTaskList(task *funcData) bool {
 	}
 
 	if task.taskType == "simple" {
-		t.addTaskStruct(&taskMQ{
+		t.addTaskStruct(&taskInfo{
 			TaskName:   task.taskName,
 			SubmitTime: util.IntToStr(time.Now().Unix()),
 			RunTime:    util.IntToStr(time.Now().Unix()),
@@ -612,15 +650,15 @@ func (t *manager) addTimerTask(taskName string, args []interface{}, timer []int)
 	return true
 }
 
-// AddTimerTask
+// AddTimer
 // 异步任务管理器，要点：
 // 1、所有任务必须注册才可调用
 // 2、任务参数必须可序列化、反序列化
 // 3、任务管理器只保证任务执行，业务逻辑报错需要业务处理
-func (t *manager) AddTimerTask(taskName string, args []interface{}, timer Timer) {
+func (t *manager) AddTimer(taskName string, args []interface{}, timer Timer) {
 	timeParam := timer.timerParams()
 	if len(timeParam) <= 0 {
-		panic("AddTimerTask [month, day, hour, minutes, second] can't be all none")
+		panic("AddTimer [month, day, hour, minutes, second] can't be all none")
 	}
 
 	t.addTimerTask(taskName, args, timeParam)
@@ -713,7 +751,7 @@ func (t *manager) getNextTime(b string, minTime time.Time, p map[string]int) *ti
 func (t *manager) calculateNextRunTime(timer []int, currentTime *time.Time, check bool) int64 {
 	sz := len(timer)
 	if sz <= 0 {
-		log.Printf("time conf is nil")
+		t.logger.Error(t.ctx, "time conf is nil")
 		panic("time conf is nil")
 	}
 
@@ -722,13 +760,13 @@ func (t *manager) calculateNextRunTime(timer []int, currentTime *time.Time, chec
 			conf := timeConf[i]
 			if timer[i] < conf[1].(int) || timer[i] > conf[2].(int) {
 				errStr := fmt.Sprintf("%s between %d and %d", conf[0], conf[1], conf[2])
-				log.Println(errStr)
+				t.logger.Error(t.ctx, errStr)
 				panic(errStr)
 			}
 			if conf[0].(string) == "month" {
 				if timer[i-1] > monthDays[timer[i]-1] {
 					errStr := fmt.Sprintf("%s between %d and %d", conf[0], conf[1], conf[2])
-					log.Println(errStr)
+					t.logger.Error(t.ctx, errStr)
 					panic(errStr)
 				}
 			}
@@ -806,7 +844,7 @@ func (t *manager) clearStreamData() {
 				Count:  100,
 			}).Result()
 			if err != nil {
-				log.Println(err)
+				t.logger.Error(t.ctx, err.Error())
 				return
 			}
 
@@ -836,7 +874,7 @@ func (t *manager) clearStreamData() {
 	}()
 }
 
-func (t *manager) RunTaskManager() {
+func (t *manager) Run() {
 	t.threadPool = workpool.NewWorkPool(t.threadSize, "task_manager_pool_"+t.taskLabel, 0, t.threadSize)
 
 	t.registerScheduledTaskActive()
@@ -849,12 +887,13 @@ func (t *manager) RunTaskManager() {
 }
 
 // NewManager 创建任务管理器
-func NewManager(workPoolSize int, taskLabel string, calculateIntervalMS int64, redisConn *redis.Redis) Manager {
+func NewManager(ctx context.Context, workPoolSize int, taskLabel string, calculateIntervalMS int64, redisConn *redis.Redis) Manager {
 	task := new(manager)
+	task.logger = empty.NoLog
+	task.ctx = ctx
 
 	uuidV4, err := uuid.NewV4()
 	if err != nil {
-		log.Println(err)
 		panic(err)
 	}
 
@@ -866,6 +905,8 @@ func NewManager(workPoolSize int, taskLabel string, calculateIntervalMS int64, r
 	task.taskMainKey = "go_task_manager_" + task.taskLabel
 	task.threadSize = workPoolSize
 	task.redis = redisConn
+
+	task.runningTaskLock = "task_running_lock_" + task.taskLabel + "_%s"
 
 	task.streamKey = "task_stream_mq_" + task.taskLabel
 	task.groupName = "task_group_" + task.taskLabel
@@ -890,7 +931,7 @@ func SingleTask(workPoolSize int, taskLabel string, calculateIntervalMS int64, r
 		defer taskLock.Unlock()
 
 		if globalManager == nil {
-			globalManager = NewManager(workPoolSize, taskLabel, calculateIntervalMS, redisConn)
+			globalManager = NewManager(context.Background(), workPoolSize, taskLabel, calculateIntervalMS, redisConn)
 		}
 	}
 

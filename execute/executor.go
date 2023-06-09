@@ -2,41 +2,61 @@
 package execute
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"log"
 	"runtime/debug"
 	"sync"
+
+	"github.com/assembly-hub/log"
+	"github.com/assembly-hub/log/empty"
 
 	"github.com/assembly-hub/task/taskfunc"
 )
 
 type Executor interface {
-	// ClearTask 清除已有任务
-	ClearTask() error
-	// AddTask 添加需要执行的任务，函数必须为：executorFunc
-	AddTask(f executorFunc, param ...interface{}) Executor
-	// AddSimpleTask 推荐此方法,
-	// 添加任务，函数格式必须为：taskfunc(param ...interface{}) (interface{}, error) or 自定义参数 taskfunc(i int, s string, arr []int) (interface{}, error)
-	AddSimpleTask(f interface{}, param ...interface{}) Executor
-	// ExecuteTask 执行任务，返回任务结果，不返回任务error以及执行error
-	ExecuteTask() ([]interface{}, error)
-	// ExecuteTaskWithErr 执行任务，返回任务结果和任务error以及执行error
-	ExecuteTaskWithErr() ([]interface{}, []error, error)
+	// Logger 设置logger
+	Logger(logger log.Log)
+	// Clear 清除已有任务
+	Clear()
+	// Empty 判断是否有任务
+	Empty() bool
+	// Count 获取任务数量
+	Count() int
+	// AddFixed 添加需要执行的任务，函数必须为：executorFunc
+	AddFixed(f executorFunc, param ...interface{}) Executor
+	// AddFlexible 推荐此方法, 参数可以为空，返回值必须是：any, error，其中 any 可以是 interface 或者其他自定义类型
+	// 添加任务，函数格式必须为：
+	//    taskfunc(param ...interface{}) (interface{}, error)
+	//    或自定义参数
+	//    taskfunc(i int, s string, arr []int) (interface{}, error)
+	AddFlexible(f interface{}, param ...interface{}) Executor
+	// Execute 执行任务，返回任务结果，不返回任务error以及执行error
+	Execute(ctx context.Context) ([]interface{}, error)
+	// ExecuteWithErr 执行任务，返回任务结果和任务error以及执行error
+	ExecuteWithErr(ctx context.Context) ([]interface{}, []error, error)
 }
 
 type exeTask struct {
+	ctx      context.Context
 	taskList []*taskFunc
 	taskName string
 	wg       sync.WaitGroup
 	result   []interface{}
 	taskErr  []error
+	logger   log.Log
+}
+
+func (t *exeTask) Logger(logger log.Log) {
+	if logger != nil {
+		t.logger = logger
+	}
 }
 
 func (t *exeTask) taskFuncBag(i int, f *taskFunc) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("error: %v\n%s", p, string(debug.Stack()))
+			t.logger.Error(t.ctx, fmt.Sprintf("error: %v\n%s", p, string(debug.Stack())))
 			err = fmt.Errorf("%v", p)
 		}
 	}()
@@ -46,10 +66,10 @@ func (t *exeTask) taskFuncBag(i int, f *taskFunc) (err error) {
 	} else if f.m != nil {
 		r, err = f.m.Call(f.p...)
 	} else {
-		log.Printf("task taskfunc error\n%s", string(debug.Stack()))
+		t.logger.Error(t.ctx, fmt.Sprintf("task taskfunc error\n%s", string(debug.Stack())))
 	}
 	if err != nil {
-		log.Printf("task error: %v\n%s", err, string(debug.Stack()))
+		t.logger.Error(t.ctx, fmt.Sprintf("task error: %v\n%s", err, string(debug.Stack())))
 	}
 	t.result[i] = r
 	return
@@ -57,17 +77,26 @@ func (t *exeTask) taskFuncBag(i int, f *taskFunc) (err error) {
 
 func NewExecutor(taskName string) Executor {
 	task := new(exeTask)
+	task.ctx = context.Background()
 	task.taskName = taskName
 	task.wg = sync.WaitGroup{}
+	task.logger = empty.NoLog
 	return task
 }
 
-func (t *exeTask) ClearTask() error {
+func (t *exeTask) Clear() {
 	t.taskList = nil
-	return nil
 }
 
-func (t *exeTask) AddTask(f executorFunc, param ...interface{}) Executor {
+func (t *exeTask) Empty() bool {
+	return len(t.taskList) == 0
+}
+
+func (t *exeTask) Count() int {
+	return len(t.taskList)
+}
+
+func (t *exeTask) AddFixed(f executorFunc, param ...interface{}) Executor {
 	t.taskList = append(t.taskList, &taskFunc{
 		f: f,
 		p: param,
@@ -75,8 +104,8 @@ func (t *exeTask) AddTask(f executorFunc, param ...interface{}) Executor {
 	return t
 }
 
-func (t *exeTask) AddSimpleTask(f interface{}, param ...interface{}) Executor {
-	m := taskfunc.NewConcurrencyFuncType(f)
+func (t *exeTask) AddFlexible(f interface{}, param ...interface{}) Executor {
+	m := taskfunc.NewConcurrencyFuncType(t.ctx, f, t.logger)
 	t.taskList = append(t.taskList, &taskFunc{
 		m: m,
 		p: param,
@@ -84,10 +113,13 @@ func (t *exeTask) AddSimpleTask(f interface{}, param ...interface{}) Executor {
 	return t
 }
 
-func (t *exeTask) ExecuteTask() ([]interface{}, error) {
+func (t *exeTask) Execute(ctx context.Context) ([]interface{}, error) {
+	if ctx != nil {
+		t.ctx = ctx
+	}
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("task[%s] err[%v]\n%s", t.taskName, p, string(debug.Stack()))
+			t.logger.Error(t.ctx, fmt.Sprintf("task[%s] err[%v]\n%s", t.taskName, p, string(debug.Stack())))
 		}
 		t.taskList = nil
 		t.result = nil
@@ -109,7 +141,7 @@ func (t *exeTask) ExecuteTask() ([]interface{}, error) {
 			err := t.taskFuncBag(index, fun)
 			if err != nil {
 				t.taskErr[index] = err
-				log.Printf("task error: %v\n%s", err, string(debug.Stack()))
+				t.logger.Error(t.ctx, fmt.Sprintf("task error: %v\n%s", err, string(debug.Stack())))
 			}
 		}(i, val)
 	}
@@ -117,10 +149,13 @@ func (t *exeTask) ExecuteTask() ([]interface{}, error) {
 	return t.result, nil
 }
 
-func (t *exeTask) ExecuteTaskWithErr() ([]interface{}, []error, error) {
+func (t *exeTask) ExecuteWithErr(ctx context.Context) ([]interface{}, []error, error) {
+	if ctx != nil {
+		t.ctx = ctx
+	}
 	defer func() {
 		if p := recover(); p != nil {
-			log.Printf("task[%s] err[%v]\n%s", t.taskName, p, string(debug.Stack()))
+			t.logger.Error(t.ctx, fmt.Sprintf("task[%s] err[%v]\n%s", t.taskName, p, string(debug.Stack())))
 		}
 		t.taskList = nil
 		t.result = nil
@@ -142,7 +177,7 @@ func (t *exeTask) ExecuteTaskWithErr() ([]interface{}, []error, error) {
 			err := t.taskFuncBag(index, fun)
 			if err != nil {
 				t.taskErr[index] = err
-				log.Printf("task error: %v\n%s", err, string(debug.Stack()))
+				t.logger.Error(t.ctx, fmt.Sprintf("task error: %v\n%s", err, string(debug.Stack())))
 			}
 		}(i, val)
 	}

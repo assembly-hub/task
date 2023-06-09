@@ -7,6 +7,7 @@ import (
 )
 
 // Timer task timer config data
+// nil 标识所有可能的参数，如：Second=nil，标识0~59秒
 type Timer struct {
 	Month   *int
 	Day     *int
@@ -98,13 +99,9 @@ func (t *Timer) timerParams() []int {
 		return nil
 	}
 
-	var temp int
 	arrLen := len(params)
 	for i, j := 0, arrLen-1; i < j; {
-		temp = params[i]
-		params[i] = params[j]
-		params[j] = temp
-
+		params[i], params[j] = params[j], params[i]
 		i++
 		j--
 	}

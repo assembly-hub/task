@@ -1,10 +1,12 @@
 package taskfunc
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	"github.com/assembly-hub/basics/util"
+	"github.com/assembly-hub/log/empty"
 )
 
 func MyFunc(s string, i float64) (int, error) {
@@ -18,7 +20,7 @@ func MyFunc2(s string, i float64) (interface{}, error) {
 }
 
 func TestNewTaskFuncType(t *testing.T) {
-	tf := NewConcurrencyFuncType(MyFunc2)
+	tf := NewConcurrencyFuncType(context.Background(), MyFunc2, empty.NoLog)
 	ret, err := tf.Call("1", float64(1))
 	fmt.Println(ret, err)
 }
@@ -29,7 +31,7 @@ func MyFunc3(p ...interface{}) (interface{}, error) {
 }
 
 func TestNewTaskFuncType2(t *testing.T) {
-	tf := NewConcurrencyFuncType(MyFunc3)
+	tf := NewConcurrencyFuncType(context.Background(), MyFunc3, empty.NoLog)
 	ret, err := tf.Call("1", float64(1))
 	fmt.Println(ret, err)
 }
@@ -44,7 +46,7 @@ func MyFunc5(i int, s string, st TestStruct, ii ...int) (interface{}, error) {
 }
 
 func TestNewTaskCall(t *testing.T) {
-	tf := NewConcurrencyFuncType(MyFunc5)
+	tf := NewConcurrencyFuncType(context.Background(), MyFunc5, empty.NoLog)
 	ret, err := tf.Call(1, "2", TestStruct{
 		Test: "test",
 	}, 1, 2, 3)
@@ -62,11 +64,22 @@ func TestNewFormatCall(t *testing.T) {
 			Test: "test",
 		}, 1, 2, 3,
 	}
-	err := util.Interface2Interface(valList, &valList)
+	err := util.Any2Any(valList, &valList)
 	if err != nil {
 		panic(err)
 	}
-	tf := NewConcurrencyFuncType(MyFunc6)
+	tf := NewConcurrencyFuncType(context.Background(), MyFunc6, empty.NoLog)
 	ret, err := tf.FormatParamCall(valList...)
+	fmt.Println(ret, err)
+}
+
+func Func8() (int, error) {
+	i := 0
+	return i, nil
+}
+
+func TestNewFormatCall2(t *testing.T) {
+	tf := NewConcurrencyFuncType(context.Background(), Func8, empty.NoLog)
+	ret, err := tf.FormatParamCall()
 	fmt.Println(ret, err)
 }

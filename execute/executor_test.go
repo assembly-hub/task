@@ -1,6 +1,7 @@
 package execute
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"testing"
@@ -21,14 +22,23 @@ func hello2(i ...interface{}) (interface{}, error) {
 	return i[0], nil
 }
 
+func hello3() (*int, error) {
+	fmt.Println("hello,")
+	// time.Sleep(time.Second * 1)
+	// r := i[0]
+	// panic(111)
+	return nil, nil
+}
+
 func TestTaskExecuteSimple(t *testing.T) {
 	taskObj := NewExecutor("test111")
-	taskObj.AddTask(hello1, 0)
-	taskObj.AddSimpleTask(func(i int) (int64, error) {
+	taskObj.AddFixed(hello1, 0)
+	taskObj.AddFlexible(func(i int) (int64, error) {
 		fmt.Println("test: ", i)
 		return 1, nil
 	}, 1)
-	r, taskErr, err := taskObj.ExecuteTaskWithErr()
+	taskObj.AddFlexible(hello3)
+	r, taskErr, err := taskObj.ExecuteWithErr(context.Background())
 	if err != nil {
 		panic(err)
 	}

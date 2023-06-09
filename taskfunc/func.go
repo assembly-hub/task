@@ -2,22 +2,27 @@
 package taskfunc
 
 import (
-	"log"
+	"context"
 	"reflect"
 
 	"github.com/assembly-hub/basics/util"
+	"github.com/assembly-hub/log"
 )
 
 type ConcurrencyFuncType struct {
+	ctx          context.Context
 	funcType     reflect.Type
 	funcValType  reflect.Value
 	paramsType   []reflect.Type
 	isVariadic   bool
 	variadicType reflect.Type
+	logger       log.Log
 }
 
-func NewConcurrencyFuncType(f interface{}) *ConcurrencyFuncType {
+func NewConcurrencyFuncType(ctx context.Context, f interface{}, logger log.Log) *ConcurrencyFuncType {
 	tf := new(ConcurrencyFuncType)
+	tf.logger = logger
+	tf.ctx = ctx
 	tf.funcType = reflect.TypeOf(f)
 	if tf.funcType.Kind() != reflect.Func {
 		panic("NewConcurrencyFuncType param must be taskfunc(param ...interface{}) (any, error) or " +
@@ -45,8 +50,9 @@ func (tf *ConcurrencyFuncType) FormatParamCall(param ...interface{}) (interface{
 		needParamLen := len(tf.paramsType) - 1
 		for i, n := 0, needParamLen; i < n; i++ {
 			v := reflect.New(tf.paramsType[i]).Interface()
-			err := util.Interface2Interface(param[i], v)
+			err := util.Any2Any(param[i], v)
 			if err != nil {
+				tf.logger.Error(tf.ctx, err.Error())
 				return nil, err
 			}
 			callParam = append(callParam, reflect.ValueOf(v).Elem())
@@ -54,8 +60,9 @@ func (tf *ConcurrencyFuncType) FormatParamCall(param ...interface{}) (interface{
 		if len(param) > needParamLen {
 			for i, n := needParamLen, paramLen; i < n; i++ {
 				v := reflect.New(tf.variadicType).Interface()
-				err := util.Interface2Interface(param[i], v)
+				err := util.Any2Any(param[i], v)
 				if err != nil {
+					tf.logger.Error(tf.ctx, err.Error())
 					return nil, err
 				}
 				callParam = append(callParam, reflect.ValueOf(v).Elem())
@@ -64,7 +71,7 @@ func (tf *ConcurrencyFuncType) FormatParamCall(param ...interface{}) (interface{
 	} else {
 		for i, n := 0, len(tf.paramsType); i < n; i++ {
 			v := reflect.New(tf.paramsType[i]).Interface()
-			err := util.Interface2Interface(param[i], v)
+			err := util.Any2Any(param[i], v)
 			if err != nil {
 				return nil, err
 			}
@@ -88,19 +95,29 @@ func (tf *ConcurrencyFuncType) call(callParam []reflect.Value) (interface{}, err
 	if ret[1].Interface() != nil {
 		err = ret[1].Interface().(error)
 	}
-	return ret[0].Interface(), err
+	var val interface{}
+	if ret[0].Kind() == reflect.Pointer && ret[0].IsNil() {
+		val = nil
+	} else {
+		val = ret[0].Interface()
+	}
+	return val, err
 }
 
 type AsyncFuncType struct {
+	ctx          context.Context
 	funcType     reflect.Type
 	funcValType  reflect.Value
 	paramsType   []reflect.Type
 	isVariadic   bool
 	variadicType reflect.Type
+	logger       log.Log
 }
 
-func NewAsyncFuncType(f interface{}) *AsyncFuncType {
+func NewAsyncFuncType(ctx context.Context, f interface{}, logger log.Log) *AsyncFuncType {
 	tf := new(AsyncFuncType)
+	tf.logger = logger
+	tf.ctx = ctx
 	tf.funcType = reflect.TypeOf(f)
 	if tf.funcType.Kind() != reflect.Func {
 		panic("NewConcurrencyFuncType param must be taskfunc(param ...interface{}) or taskfunc(i int, s string, ...)")
@@ -127,9 +144,9 @@ func (tf *AsyncFuncType) FormatParamCall(param ...interface{}) {
 		needParamLen := len(tf.paramsType) - 1
 		for i, n := 0, needParamLen; i < n; i++ {
 			v := reflect.New(tf.paramsType[i]).Interface()
-			err := util.Interface2Interface(param[i], v)
+			err := util.Any2Any(param[i], v)
 			if err != nil {
-				log.Println(err)
+				tf.logger.Error(tf.ctx, err.Error())
 				return
 			}
 			callParam = append(callParam, reflect.ValueOf(v).Elem())
@@ -137,9 +154,9 @@ func (tf *AsyncFuncType) FormatParamCall(param ...interface{}) {
 		if len(param) > needParamLen {
 			for i, n := needParamLen, paramLen; i < n; i++ {
 				v := reflect.New(tf.variadicType).Interface()
-				err := util.Interface2Interface(param[i], v)
+				err := util.Any2Any(param[i], v)
 				if err != nil {
-					log.Println(err)
+					tf.logger.Error(tf.ctx, err.Error())
 					return
 				}
 				callParam = append(callParam, reflect.ValueOf(v).Elem())
@@ -148,9 +165,9 @@ func (tf *AsyncFuncType) FormatParamCall(param ...interface{}) {
 	} else {
 		for i, n := 0, len(tf.paramsType); i < n; i++ {
 			v := reflect.New(tf.paramsType[i]).Interface()
-			err := util.Interface2Interface(param[i], v)
+			err := util.Any2Any(param[i], v)
 			if err != nil {
-				log.Println(err)
+				tf.logger.Error(tf.ctx, err.Error())
 				return
 			}
 			callParam = append(callParam, reflect.ValueOf(v).Elem())
