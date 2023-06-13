@@ -875,7 +875,7 @@ func (t *manager) clearStreamData() {
 }
 
 func (t *manager) Run() {
-	t.threadPool = workpool.NewWorkPool(t.threadSize, "task_manager_pool_"+t.taskLabel, 0, t.threadSize)
+	t.threadPool = workpool.NewWorkPool(t.threadSize, "task_manager_pool_"+t.taskLabel, t.calculateIntervalMS, t.threadSize)
 
 	t.registerScheduledTaskActive()
 	t.initDemo()
