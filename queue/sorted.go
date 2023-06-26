@@ -28,6 +28,12 @@ type SortedQueue interface {
 	IsFinished() bool
 	// Destruction 销毁队列
 	Destruction()
+	// OpenFinishNotify 开启任务完成通知，开启之后需要 WatchFinishNotify 监听，否则死锁
+	OpenFinishNotify()
+	// WatchFinishNotify 监听通知，开启之后需要监听，否则死锁
+	WatchFinishNotify() <-chan struct{}
+	// BlockWaitFinishNotify 监听通知，开启之后需要监听，否则死锁
+	BlockWaitFinishNotify()
 }
 
 type sortedQueue struct {
@@ -38,6 +44,27 @@ type sortedQueue struct {
 	taskFunc     any
 	taskFlexible bool
 	taskIdle     bool
+	notifyChan   chan struct{}
+}
+
+func (s *sortedQueue) BlockWaitFinishNotify() {
+	select {
+	case <-s.notifyChan:
+		return
+	}
+}
+
+func (s *sortedQueue) OpenFinishNotify() {
+	if s.notifyChan == nil {
+		s.notifyChan = make(chan struct{})
+	}
+}
+
+func (s *sortedQueue) WatchFinishNotify() <-chan struct{} {
+	if s.notifyChan == nil {
+		panic("please first call OpenFinishNotify, then call WatchFinishNotify")
+	}
+	return s.notifyChan
 }
 
 func (s *sortedQueue) IsFinished() bool {
@@ -78,10 +105,22 @@ func (s *sortedQueue) AddMsg(param ...any) SortedQueue {
 
 func (s *sortedQueue) Destruction() {
 	close(s.taskChan)
+	if s.notifyChan != nil {
+		close(s.notifyChan)
+	}
+}
+
+func (s *sortedQueue) sendFinishNotify() {
+	if s.notifyChan != nil {
+		if s.taskIdle && len(s.taskChan) == 0 {
+			s.notifyChan <- struct{}{}
+		}
+	}
 }
 
 func (s *sortedQueue) run() {
 	for {
+		s.sendFinishNotify()
 		select {
 		case p := <-s.taskChan:
 			s.taskIdle = false

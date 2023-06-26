@@ -37,3 +37,20 @@ func TestNewSortedQueue2(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 }
+
+func TestNewSortedQueue3(t *testing.T) {
+	q := NewSortedQueue(context.Background(), 100)
+	q.ConsumeFixed(func(i ...any) {
+		fmt.Println("------", i)
+	})
+
+	for i := 0; i < 100; i++ {
+		q.AddMsg(i)
+	}
+
+	q.OpenFinishNotify()
+	select {
+	case <-q.WatchFinishNotify():
+		fmt.Println("finished")
+	}
+}

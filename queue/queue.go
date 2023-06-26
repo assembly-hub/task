@@ -29,6 +29,12 @@ type Queue interface {
 	IsFinished() bool
 	// Destruction 销毁队列
 	Destruction()
+	// OpenFinishNotify 开启任务完成通知，开启之后需要 WatchFinishNotify 监听，否则死锁
+	OpenFinishNotify()
+	// WatchFinishNotify 监听通知，开启之后需要监听，否则死锁
+	WatchFinishNotify() <-chan struct{}
+	// BlockWaitFinishNotify 监听通知，开启之后需要监听，否则死锁
+	BlockWaitFinishNotify()
 }
 
 type queue struct {
@@ -37,6 +43,18 @@ type queue struct {
 	taskFunc     any
 	taskFlexible bool
 	wp           workpool.WorkPool
+}
+
+func (q *queue) BlockWaitFinishNotify() {
+	q.wp.BlockWaitFinishNotify()
+}
+
+func (q *queue) OpenFinishNotify() {
+	q.wp.OpenFinishNotify()
+}
+
+func (q *queue) WatchFinishNotify() <-chan struct{} {
+	return q.wp.WatchFinishNotify()
 }
 
 func (q *queue) Logger(logger log.Log) {
