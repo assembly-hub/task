@@ -48,9 +48,6 @@ func TestNewQueue3(t *testing.T) {
 		q.AddMsg(i)
 	}
 
-	q.OpenFinishNotify()
-	select {
-	case <-q.WatchFinishNotify():
-		fmt.Println("finished")
-	}
+	q.WaitFinish()
+	fmt.Println("finished")
 }

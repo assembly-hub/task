@@ -84,7 +84,7 @@ type manager struct {
 	// 服务UUID
 	serverUUID string
 	// 服务注册间隔
-	calculateIntervalMS int64
+	registerIntervalMS int64
 
 	// 任务标识
 	taskLabel string
@@ -476,8 +476,8 @@ func (t *manager) checkParams() error {
 		return fmt.Errorf("taskLabel is not blank")
 	}
 
-	if t.calculateIntervalMS < 500 {
-		t.calculateIntervalMS = 500
+	if t.registerIntervalMS < 500 {
+		t.registerIntervalMS = 500
 	}
 
 	if t.redis == nil {
@@ -510,7 +510,7 @@ func (t *manager) registerScheduledTaskActive() {
 	go func() {
 		for {
 			innerFunc(t)
-			time.Sleep(time.Duration(t.calculateIntervalMS) * time.Millisecond)
+			time.Sleep(time.Duration(t.registerIntervalMS) * time.Millisecond)
 		}
 	}()
 }
@@ -875,7 +875,7 @@ func (t *manager) clearStreamData() {
 }
 
 func (t *manager) Run() {
-	t.threadPool = workpool.NewWorkPool(t.threadSize, "task_manager_pool_"+t.taskLabel, t.calculateIntervalMS, t.threadSize)
+	t.threadPool = workpool.NewWorkPool(t.threadSize, "task_manager_pool_"+t.taskLabel, 0, t.threadSize)
 
 	t.registerScheduledTaskActive()
 	t.initDemo()
@@ -887,7 +887,7 @@ func (t *manager) Run() {
 }
 
 // NewManager 创建任务管理器
-func NewManager(ctx context.Context, workPoolSize int, taskLabel string, calculateIntervalMS int64, redisConn *redis.Redis) Manager {
+func NewManager(ctx context.Context, workPoolSize int, taskLabel string, registerIntervalMS int64, redisConn *redis.Redis) Manager {
 	task := new(manager)
 	task.logger = empty.NoLog
 	task.ctx = ctx
@@ -900,7 +900,7 @@ func NewManager(ctx context.Context, workPoolSize int, taskLabel string, calcula
 	task.serverUUID = uuidV4.String()
 
 	task.taskEffectiveTime = 60
-	task.calculateIntervalMS = calculateIntervalMS
+	task.registerIntervalMS = registerIntervalMS
 	task.taskLabel = taskLabel
 	task.taskMainKey = "go_task_manager_" + task.taskLabel
 	task.threadSize = workPoolSize
@@ -925,13 +925,13 @@ func NewManager(ctx context.Context, workPoolSize int, taskLabel string, calcula
 }
 
 // SingleTask 创建TaskManager单例
-func SingleTask(workPoolSize int, taskLabel string, calculateIntervalMS int64, redisConn *redis.Redis) Manager {
+func SingleTask(workPoolSize int, taskLabel string, registerIntervalMS int64, redisConn *redis.Redis) Manager {
 	if globalManager == nil {
 		taskLock.Lock()
 		defer taskLock.Unlock()
 
 		if globalManager == nil {
-			globalManager = NewManager(context.Background(), workPoolSize, taskLabel, calculateIntervalMS, redisConn)
+			globalManager = NewManager(context.Background(), workPoolSize, taskLabel, registerIntervalMS, redisConn)
 		}
 	}
 
