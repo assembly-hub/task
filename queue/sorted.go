@@ -33,24 +33,44 @@ type SortedQueue interface {
 }
 
 type sortedQueue struct {
-	ctx          context.Context
-	logger       log.Log
-	queueLen     int
-	taskChan     chan []any
-	taskFunc     any
-	taskFlexible bool
-	taskIdle     bool
-	notifyChan   chan struct{}
+	ctx           context.Context
+	logger        log.Log
+	queueLen      int
+	taskChan      chan []any
+	taskFunc      any
+	taskFlexible  bool
+	taskIdle      bool
+	finishNotify  chan struct{}
+	waitFinishVal bool
 }
 
 func (s *sortedQueue) WaitFinish() {
+	s.waitFinishVal = true
+	defer func() {
+		s.waitFinishVal = false
+	}()
+
 	if s.IsFinished() {
 		return
 	}
 
 	select {
-	case <-s.notifyChan:
-		return
+	case <-s.finishNotify:
+	}
+}
+
+func (s *sortedQueue) sendFinishNotify() {
+	if s.IsFinished() {
+		defer func() {
+			_ = recover()
+		}()
+		select {
+		case s.finishNotify <- struct{}{}:
+		default:
+			if s.waitFinishVal {
+				s.finishNotify <- struct{}{}
+			}
+		}
 	}
 }
 
@@ -99,19 +119,7 @@ func (s *sortedQueue) AddMsg(param ...any) SortedQueue {
 
 func (s *sortedQueue) Destruction() {
 	close(s.taskChan)
-	close(s.notifyChan)
-}
-
-func (s *sortedQueue) sendFinishNotify() {
-	if s.IsFinished() {
-		defer func() {
-			_ = recover()
-		}()
-		select {
-		case s.notifyChan <- struct{}{}:
-		default:
-		}
-	}
+	close(s.finishNotify)
 }
 
 func (s *sortedQueue) run() {
@@ -145,6 +153,8 @@ func (s *sortedQueue) taskBag(p []any) {
 
 func NewSortedQueue(ctx context.Context, queueLen int) SortedQueue {
 	q := new(sortedQueue)
+	q.waitFinishVal = false
+
 	q.taskIdle = true
 	q.ctx = ctx
 	q.logger = empty.NoLog
@@ -153,7 +163,7 @@ func NewSortedQueue(ctx context.Context, queueLen int) SortedQueue {
 		q.queueLen = 0
 	}
 	q.taskChan = make(chan []any, q.queueLen)
-	q.notifyChan = make(chan struct{})
+	q.finishNotify = make(chan struct{})
 	go q.run()
 	return q
 }

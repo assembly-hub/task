@@ -134,25 +134,7 @@ func TestNewQueue(t *testing.T) {
 		q.AddMsg(i)
 	}
 
-	time.Sleep(time.Second)
-}
-
-func TestNewQueue2(t *testing.T) {
-	q := NewQueue(context.Background(), 10, 90)
-	q.ConsumeFlexible(func(i int) {
-		fmt.Println(i)
-	})
-
-	for i := 1; i < 100; i++ {
-		q.AddMsg(i)
-	}
-
-	for {
-		if q.IsFinished() {
-			break
-		}
-		time.Sleep(time.Second)
-	}
+    q.WaitFinish()
 }
 ```
 
@@ -167,25 +149,7 @@ func TestNewSortedQueue(t *testing.T) {
     for i := 1; i < 100; i++ {
         q.AddMsg(i)
     }
-    
-    time.Sleep(time.Second)
-}
 
-func TestNewSortedQueue2(t *testing.T) {
-    q := NewSortedQueue(context.Background(), 100)
-    q.ConsumeFixed(func(i ...any) {
-        fmt.Println(i)
-    })
-    
-    for i := 1; i < 100; i++ {
-        q.AddMsg(i)
-    }
-    
-    for {
-        if q.IsFinished() {
-            break
-        }
-        time.Sleep(time.Second)
-    }
+    q.WaitFinish()
 }
 ```
