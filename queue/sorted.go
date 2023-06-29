@@ -45,32 +45,26 @@ type sortedQueue struct {
 }
 
 func (s *sortedQueue) WaitFinish() {
+	s.finishNotify = make(chan struct{})
 	s.waitFinishVal = true
 	defer func() {
 		s.waitFinishVal = false
+		close(s.finishNotify)
 	}()
 
 	if s.IsFinished() {
 		return
 	}
 
-	select {
-	case <-s.finishNotify:
-	}
+	<-s.finishNotify
 }
 
 func (s *sortedQueue) sendFinishNotify() {
-	if s.IsFinished() {
+	if s.waitFinishVal && s.IsFinished() {
 		defer func() {
 			_ = recover()
 		}()
-		select {
-		case s.finishNotify <- struct{}{}:
-		default:
-			if s.waitFinishVal {
-				s.finishNotify <- struct{}{}
-			}
-		}
+		s.finishNotify <- struct{}{}
 	}
 }
 
@@ -119,7 +113,6 @@ func (s *sortedQueue) AddMsg(param ...any) SortedQueue {
 
 func (s *sortedQueue) Destruction() {
 	close(s.taskChan)
-	close(s.finishNotify)
 }
 
 func (s *sortedQueue) run() {
@@ -163,7 +156,6 @@ func NewSortedQueue(ctx context.Context, queueLen int) SortedQueue {
 		q.queueLen = 0
 	}
 	q.taskChan = make(chan []any, q.queueLen)
-	q.finishNotify = make(chan struct{})
 	go q.run()
 	return q
 }

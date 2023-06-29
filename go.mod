@@ -3,7 +3,7 @@ module github.com/assembly-hub/task
 go 1.19
 
 require (
-	github.com/assembly-hub/basics v1.5.3
+	github.com/assembly-hub/basics v1.5.5
 	github.com/assembly-hub/log v1.2.0
 	github.com/go-redis/redis/v8 v8.11.4
 )

@@ -1,5 +1,5 @@
-github.com/assembly-hub/basics v1.5.3 h1:68sBHawyvwm9viJ3CQjO2QhDVGEacTihnh3hJMIcUZ8=
-github.com/assembly-hub/basics v1.5.3/go.mod h1:WJXeuFaAjuYApscn3Gu6zUrDlfWmrhWR6vm50yTd/GY=
+github.com/assembly-hub/basics v1.5.5 h1:7HqkDad2X9M72FAJLTdZqujrnqYSgb/qTdXxpXmjGZE=
+github.com/assembly-hub/basics v1.5.5/go.mod h1:WJXeuFaAjuYApscn3Gu6zUrDlfWmrhWR6vm50yTd/GY=
 github.com/assembly-hub/log v1.2.0 h1:9OkHEd/CTtW46QH8V2jiaOsRlOk6o6C0bBUPWXPN7Ww=
 github.com/assembly-hub/log v1.2.0/go.mod h1:uoN8wkgxbWyLuua7mmTdxHoHDRDjkdwa6NN8beYlbmI=
 github.com/cespare/xxhash/v2 v2.1.2 h1:YRXhKfTDauu4ajMg1TPgFO5jnlC2HCbmLXMcTG5cbYE=
